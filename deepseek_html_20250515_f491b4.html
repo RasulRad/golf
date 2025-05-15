@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#000000">
+    <title>Ретро Гольф</title>
+    <link rel="manifest" href="manifest.json">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            touch-action: manipulation;
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        
+        #gameCanvas {
+            display: block;
+            background-color: #000;
+            border: 1px solid #fff;
+            margin: 0 auto;
+        }
+        
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 16px;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        button {
+            background: #000;
+            color: #fff;
+            border: 1px solid #fff;
+            padding: 8px 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        
+        button:active {
+            background: #fff;
+            color: #000;
+        }
+        
+        #powerIndicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 16px;
+        }
+        
+        #installBtn {
+            position: absolute;
+            top: 40px;
+            right: 10px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui">Режим: РИСОВАНИЕ СТЕН</div>
+    <div id="powerIndicator">Сила: 0%</div>
+    <button id="installBtn">Установить</button>
+    
+    <div id="controls">
+        <button id="modeBtn">Закончить стены</button>
+        <button id="resetBtn">Сброс</button>
+    </div>
+
+    <script>
+        // PWA установка
+        let deferredPrompt;
+        const installBtn = document.getElementById('installBtn');
+        
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            installBtn.style.display = 'block';
+        });
+        
+        installBtn.addEventListener('click', async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                if (outcome === 'accepted') {
+                    installBtn.style.display = 'none';
+                }
+                deferredPrompt = null;
+            }
+        });
+        
+        // Игровые переменные
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const ui = document.getElementById('ui');
+        const powerIndicator = document.getElementById('powerIndicator');
+        const modeBtn = document.getElementById('modeBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        
+        // Размеры canvas
+        function resizeCanvas() {
+            const size = Math.min(window.innerWidth, window.innerHeight) * 0.9;
+            canvas.width = size;
+            canvas.height = size;
+        }
+        
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+        
+        // Состояние игры
+        const gameState = {
+            mode: 'drawWalls', // 'drawWalls', 'placeBall', 'placeHole', 'play'
+            walls: [],
+            currentWall: [],
+            ball: { x: null, y: null, radius: 10 },
+            hole: { x: null, y: null, radius: 15 },
+            isShooting: false,
+            isDragging: false,
+            dragStart: { x: 0, y: 0 },
+            power: 0,
+            ballVelocity: { x: 0, y: 0 },
+            strokes: 0
+        };
+        
+        // Обработчики событий
+        canvas.addEventListener('mousedown', handlePointerDown);
+        canvas.addEventListener('mousemove', handlePointerMove);
+        canvas.addEventListener('mouseup', handlePointerUp);
+        
+        canvas.addEventListener('touchstart', handlePointerDown);
+        canvas.addEventListener('touchmove', handlePointerMove);
+        canvas.addEventListener('touchend', handlePointerUp);
+        
+        modeBtn.addEventListener('click', toggleMode);
+        resetBtn.addEventListener('click', resetGame);
+        
+        function handlePointerDown(e) {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const x = (e.clientX || e.touches[0].clientX) - rect.left;
+            const y = (e.clientY || e.touches[0].clientY) - rect.top;
+            
+            if (gameState.mode === 'drawWalls') {
+                gameState.currentWall = [{ x, y }];
+            } else if (gameState.mode === 'placeBall') {
+                gameState.ball.x = x;
+                gameState.ball.y = y;
+                drawGame();
+            } else if (gameState.mode === 'placeHole') {
+                gameState.hole.x = x;
+                gameState.hole.y = y;
+                drawGame();
+            } else if (gameState.mode === 'play' && !gameState.isShooting) {
+                // Проверяем, что касание началось на мяче
+                const dist = Math.sqrt(
+                    Math.pow(x - gameState.ball.x, 2) + 
+                    Math.pow(y - gameState.ball.y, 2)
+                );
+                
+                if (dist <= gameState.ball.radius) {
+                    gameState.isDragging = true;
+                    gameState.dragStart = { x, y };
+                }
+            }
+        }
+        
+        function handlePointerMove(e) {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const x = (e.clientX || e.touches[0].clientX) - rect.left;
+            const y = (e.clientY || e.touches[0].clientY) - rect.top;
+            
+            if (gameState.mode === 'drawWalls' && gameState.currentWall.length > 0) {
+                gameState.currentWall.push({ x, y });
+                drawGame();
+            } else if (gameState.mode === 'play' && gameState.isDragging) {
+                drawGame();
+            }
+        }
+        
+        function handlePointerUp(e) {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const x = (e.clientX || (e.changedTouches && e.changedTouches[0].clientX)) - rect.left;
+            const y = (e.clientY || (e.changedTouches && e.changedTouches[0].clientY)) - rect.top;
+            
+            if (gameState.mode === 'drawWalls' && gameState.currentWall.length > 1) {
+                gameState.walls.push(gameState.currentWall);
+                gameState.currentWall = [];
+                drawGame();
+            } else if (gameState.mode === 'play' && gameState.isDragging) {
+                gameState.isDragging = false;
+                
+                // Рассчитываем силу удара на основе расстояния
+                const dx = gameState.dragStart.x - x;
+                const dy = gameState.dragStart.y - y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                const maxDistance = canvas.width / 4;
+                gameState.power = Math.min(distance / maxDistance * 100, 100);
+                
+                // Удар мяча
+                shootBall();
+            }
+        }
+        
+        function toggleMode() {
+            if (gameState.mode === 'drawWalls') {
+                gameState.mode = 'placeBall';
+                modeBtn.textContent = 'Разместить лунку';
+                ui.textContent = 'Режим: РАЗМЕЩЕНИЕ МЯЧА';
+            } else if (gameState.mode === 'placeBall' && gameState.ball.x !== null) {
+                gameState.mode = 'placeHole';
+                modeBtn.textContent = 'Играть';
+                ui.textContent = 'Режим: РАЗМЕЩЕНИЕ ЛУНКИ';
+            } else if (gameState.mode === 'placeHole' && gameState.hole.x !== null) {
+                gameState.mode = 'play';
+                modeBtn.textContent = 'Редактировать';
+                ui.textContent = 'Режим: ИГРА';
+            } else if (gameState.mode === 'play') {
+                gameState.mode = 'drawWalls';
+                modeBtn.textContent = 'Закончить стены';
+                ui.textContent = 'Режим: РИСОВАНИЕ СТЕН';
+            }
+        }
+        
+        function resetGame() {
+            gameState.walls = [];
+            gameState.currentWall = [];
+            gameState.ball.x = null;
+            gameState.ball.y = null;
+            gameState.hole.x = null;
+            gameState.hole.y = null;
+            gameState.mode = 'drawWalls';
+            gameState.isShooting = false;
+            gameState.isDragging = false;
+            gameState.ballVelocity = { x: 0, y: 0 };
+            gameState.strokes = 0;
+            modeBtn.textContent = 'Закончить стены';
+            ui.textContent = 'Режим: РИСОВАНИЕ СТЕН';
+            drawGame();
+        }
+        
+        function shootBall() {
+            if (gameState.mode !== 'play' || gameState.isShooting) return;
+            
+            gameState.isShooting = true;
+            gameState.strokes++;
+            
+            const dx = gameState.dragStart.x - gameState.ball.x;
+            const dy = gameState.dragStart.y - gameState.ball.y;
+            const angle = Math.atan2(dy, dx);
+            
+            const power = gameState.power / 100 * 15;
+            gameState.ballVelocity = {
+                x: Math.cos(angle) * power,
+                y: Math.sin(angle) * power
+            };
+            
+            gameLoop();
+        }
+        
+        function gameLoop() {
+            if (!gameState.isShooting) return;
+            
+            // Обновление позиции мяча
+            gameState.ball.x += gameState.ballVelocity.x;
+            gameState.ball.y += gameState.ballVelocity.y;
+            
+            // Применение трения
+            gameState.ballVelocity.x *= 0.98;
+            gameState.ballVelocity.y *= 0.98;
+            
+            // Проверка столкновений со стенами
+            for (const wall of gameState.walls) {
+                for (let i = 0; i < wall.length - 1; i++) {
+                    const p1 = wall[i];
+                    const p2 = wall[i + 1];
+                    
+                    if (lineCircleCollision(p1, p2, gameState.ball)) {
+                        // Вычисление нормали к стене
+                        const wallAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                        const normalAngle = wallAngle + Math.PI / 2;
+                        
+                        // Отражение скорости
+                        const speed = Math.sqrt(
+                            gameState.ballVelocity.x * gameState.ballVelocity.x +
+                            gameState.ballVelocity.y * gameState.ballVelocity.y
+                        );
+                        
+                        const incidentAngle = Math.atan2(gameState.ballVelocity.y, gameState.ballVelocity.x);
+                        const reflectionAngle = 2 * normalAngle - incidentAngle;
+                        
+                        gameState.ballVelocity.x = Math.cos(reflectionAngle) * speed * 0.8;
+                        gameState.ballVelocity.y = Math.sin(reflectionAngle) * speed * 0.8;
+                    }
+                }
+            }
+            
+            // Проверка на попадание в лунку
+            const distToHole = Math.sqrt(
+                Math.pow(gameState.ball.x - gameState.hole.x, 2) +
+                Math.pow(gameState.ball.y - gameState.hole.y, 2)
+            );
+            
+            if (distToHole < gameState.hole.radius) {
+                gameState.isShooting = false;
+                ui.textContent = `Победа! Удары: ${gameState.strokes}`;
+                return;
+            }
+            
+            // Проверка на остановку мяча
+            const speed = Math.sqrt(
+                gameState.ballVelocity.x * gameState.ballVelocity.x +
+                gameState.ballVelocity.y * gameState.ballVelocity.y
+            );
+            
+            if (speed < 0.1) {
+                gameState.isShooting = false;
+            }
+            
+            drawGame();
+            
+            if (gameState.isShooting) {
+                requestAnimationFrame(gameLoop);
+            }
+        }
+        
+        function lineCircleCollision(p1, p2, circle) {
+            // Проверка столкновения линии и круга
+            const dist = distancePointToLine(circle, p1, p2);
+            if (dist > circle.radius) return false;
+            
+            // Проверка что проекция находится на отрезке
+            const dot = ((circle.x - p1.x) * (p2.x - p1.x) + 
+                         (circle.y - p1.y) * (p2.y - p1.y)) / 
+                         Math.pow(distance(p1, p2), 2);
+            
+            return dot >= 0 && dot <= 1;
+        }
+        
+        function distancePointToLine(point, lineP1, lineP2) {
+            const A = point.x - lineP1.x;
+            const B = point.y - lineP1.y;
+            const C = lineP2.x - lineP1.x;
+            const D = lineP2.y - lineP1.y;
+            
+            const dot = A * C + B * D;
+            const len_sq = C * C + D * D;
+            let param = -1;
+            
+            if (len_sq !== 0) param = dot / len_sq;
+            
+            let xx, yy;
+            
+            if (param < 0) {
+                xx = lineP1.x;
+                yy = lineP1.y;
+            } else if (param > 1) {
+                xx = lineP2.x;
+                yy = lineP2.y;
+            } else {
+                xx = lineP1.x + param * C;
+                yy = lineP1.y + param * D;
+            }
+            
+            return Math.sqrt(Math.pow(point.x - xx, 2) + Math.pow(point.y - yy, 2));
+        }
+        
+        function distance(p1, p2) {
+            return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+        }
+        
+        function drawGame() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = '#fff';
+            ctx.fillStyle = '#fff';
+            ctx.lineWidth = 2;
+            
+            // Рисование стен
+            for (const wall of gameState.walls) {
+                ctx.beginPath();
+                ctx.moveTo(wall[0].x, wall[0].y);
+                for (let i = 1; i < wall.length; i++) {
+                    ctx.lineTo(wall[i].x, wall[i].y);
+                }
+                ctx.stroke();
+            }
+            
+            // Рисование текущей стены
+            if (gameState.currentWall.length > 0) {
+                ctx.beginPath();
+                ctx.moveTo(gameState.currentWall[0].x, gameState.currentWall[0].y);
+                for (let i = 1; i < gameState.currentWall.length; i++) {
+                    ctx.lineTo(gameState.currentWall[i].x, gameState.currentWall[i].y);
+                }
+                ctx.stroke();
+            }
+            
+            // Рисование лунки
+            if (gameState.hole.x !== null) {
+                ctx.beginPath();
+                ctx.arc(gameState.hole.x, gameState.hole.y, gameState.hole.radius, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            
+            // Рисование мяча
+            if (gameState.ball.x !== null) {
+                ctx.beginPath();
+                ctx.arc(gameState.ball.x, gameState.ball.y, gameState.ball.radius, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Рисование линии натяжения в режиме игры при перетаскивании
+                if (gameState.mode === 'play' && gameState.isDragging) {
+                    ctx.beginPath();
+                    ctx.moveTo(gameState.ball.x, gameState.ball.y);
+                    ctx.lineTo(gameState.dragStart.x, gameState.dragStart.y);
+                    ctx.stroke();
+                    
+                    // Отображение силы удара
+                    const dx = gameState.dragStart.x - gameState.ball.x;
+                    const dy = gameState.dragStart.y - gameState.ball.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    const maxDistance = canvas.width / 4;
+                    const power = Math.min(distance / maxDistance * 100, 100);
+                    
+                    powerIndicator.textContent = `Сила: ${Math.round(power)}%`;
+                }
+            }
+            
+            // Отображение количества ударов
+            if (gameState.mode === 'play') {
+                ctx.font = '16px Courier New';
+                ctx.fillText(`Удары: ${gameState.strokes}`, 10, 30);
+            }
+        }
+        
+        // Запуск игры
+        drawGame();
+    </script>
+    
+    <script>
+        // Manifest для PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(err => {
+                    console.log('ServiceWorker registration failed: ', err);
+                });
+            });
+        }
+        
+        const manifest = {
+            "name": "Ретро Гольф",
+            "short_name": "Гольф",
+            "description": "Ретро-стильная игра в гольф",
+            "start_url": ".",
+            "display": "standalone",
+            "background_color": "#000000",
+            "theme_color": "#000000",
+            "icons": [
+                {
+                    "src": "icon-192.png",
+                    "sizes": "192x192",
+                    "type": "image/png"
+                },
+                {
+                    "src": "icon-512.png",
+                    "sizes": "512x512",
+                    "type": "image/png"
+                }
+            ]
+        };
+        
+        const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+        const manifestUrl = URL.createObjectURL(blob);
+        
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = manifestUrl;
+        document.head.appendChild(link);
+        
+        // Простой Service Worker
+        const swCode = `
+            self.addEventListener('install', event => {
+                event.waitUntil(self.skipWaiting());
+            });
+            
+            self.addEventListener('activate', event => {
+                event.waitUntil(self.clients.claim());
+            });
+        `;
+        
+        const swBlob = new Blob([swCode], { type: 'application/javascript' });
+        const swUrl = URL.createObjectURL(swBlob);
+        
+        // Создаем временный элемент script для SW, если он нужен для регистрации
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register(swUrl)
+                .then(reg => console.log('SW registered'))
+                .catch(err => console.log('SW registration failed: ', err));
+        }
+    </script>
+</body>
+</html>
